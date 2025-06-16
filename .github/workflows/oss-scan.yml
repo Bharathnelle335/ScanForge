@@ -4,42 +4,58 @@ name: ScanForge Manual
 on:
   workflow_dispatch:
     inputs:
+      target_kind:
+        description: "Type of input (git, docker, zip, folder, sbom)"
+        required: true
+        type: choice
+        options: [git, docker, zip, folder, sbom]
+      target_value:
+        description: "URL, path, or image tag"
+        required: true
+        type: string
+
       scanoss:
-        description: "Run SCANOSS scanner"
-        required: false
-        default: "true"
+        description: "SCANOSS"
+        type: choice
+        options: [auto, true, false]
+        default: auto
       ort:
-        description: "Run ORT scanner"
-        required: false
-        default: "true"
+        description: "ORT"
+        type: choice
+        options: [auto, true, false]
+        default: auto
       syft:
-        description: "Run Syft scanner"
-        required: false
-        default: "true"
+        description: "Syft"
+        type: choice
+        options: [auto, true, false]
+        default: auto
       scancode:
-        description: "Run ScanCode Toolkit"
-        required: false
-        default: "true"
+        description: "ScanCode"
+        type: choice
+        options: [auto, true, false]
+        default: auto
       msbom:
-        description: "Run Microsoft SBOM tool"
-        required: false
-        default: "true"
+        description: "MS SBOM"
+        type: choice
+        options: [auto, true, false]
+        default: auto
+      excel:
+        description: "Generate Excel"
+        type: choice
+        options: [auto, true, false]
+        default: auto
       dtrack:
         description: "Upload to Dependency-Track"
-        required: false
-        default: "false"
-      excel:
-        description: "Generate Excel report"
-        required: false
-        default: "true"
+        type: choice
+        options: [auto, true, false]
+        default: auto
 
 jobs:
   scan:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -47,29 +63,79 @@ jobs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
+      run: pip install -r requirements.txt
 
-    - name: Run ScanForge (manual selection)
+    - name: Prepare input
+      id: prep
       run: |
+        kind="${{ inputs.target_kind }}"
+        value="${{ inputs.target_value }}"
+        if [[ "$kind" == "git" ]]; then
+          git clone --depth 1 "$value" target-src
+          echo "TARGET=target-src" >> $GITHUB_ENV
+        elif [[ "$kind" == "zip" ]]; then
+          curl -L "$value" -o z.zip
+          unzip -q z.zip -d target-src
+          echo "TARGET=target-src" >> $GITHUB_ENV
+        elif [[ "$kind" == "docker" || "$kind" == "folder" ]]; then
+          echo "TARGET=$value" >> $GITHUB_ENV
+        elif [[ "$kind" == "sbom" ]]; then
+          echo "TARGET=$value" >> $GITHUB_ENV
+        fi
+
+        # Convert auto → true/false defaults
+        tf() {
+          name=$1
+          val="${{ inputs[$1] }}"
+          if [[ "$val" == "true" || "$val" == "false" ]]; then echo "$val"; return; fi
+          case "$name-$kind" in
+            scanoss-zip|scanoss-git|scanoss-folder) echo true ;;
+            ort-zip|ort-git|ort-folder) echo true ;;
+            syft-docker) echo true ;;
+            scancode-zip|scancode-git|scancode-folder) echo true ;;
+            msbom-docker|msbom-folder) echo true ;;
+            excel-*) echo true ;;
+            dtrack-sbom) echo true ;;
+            *) echo false ;;
+          esac
+        }
+
+        echo "SCANOSS=$(tf scanoss)" >> $GITHUB_ENV
+        echo "ORT=$(tf ort)" >> $GITHUB_ENV
+        echo "SYFT=$(tf syft)" >> $GITHUB_ENV
+        echo "SCANCODE=$(tf scancode)" >> $GITHUB_ENV
+        echo "MSBOM=$(tf msbom)" >> $GITHUB_ENV
+        echo "EXCEL=$(tf excel)" >> $GITHUB_ENV
+        echo "DTRACK=$(tf dtrack)" >> $GITHUB_ENV
+
+    - name: Run ScanForge
+      run: |
+        set +e
         python main.py \
-          ${{ inputs.scanoss == 'true' && '--scanoss' || '' }} \
-          ${{ inputs.ort == 'true' && '--ort' || '' }} \
-          ${{ inputs.syft == 'true' && '--syft' || '' }} \
-          ${{ inputs.scancode == 'true' && '--scancode' || '' }} \
-          ${{ inputs.msbom == 'true' && '--msbom' || '' }} \
-          ${{ inputs.dtrack == 'true' && '--dtrack' || '' }} \
-          ${{ inputs.excel == 'true' && '--excel' || '' }} \
-          .
+          $([[ "$SCANOSS" == "true" ]] && echo --scanoss) \
+          $([[ "$ORT" == "true" ]] && echo --ort) \
+          $([[ "$SYFT" == "true" ]] && echo --syft) \
+          $([[ "$SCANCODE" == "true" ]] && echo --scancode) \
+          $([[ "$MSBOM" == "true" ]] && echo --msbom) \
+          $([[ "$EXCEL" == "true" ]] && echo --excel) \
+          $([[ "$DTRACK" == "true" ]] && echo --dtrack) \
+          "$TARGET" || echo "ScanForge exited non-zero"
+        set -e
 
-    - name: Upload reports
-      if: inputs.excel == 'true'
+    - name: Upload Excel report
+      if: env.EXCEL == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: scanforge-reports
+        name: scanforge-report
         path: combined.xlsx
 
-    - name: Upload SBOM to Dependency-Track
-      if: inputs.dtrack == 'true'
+    - name: Upload to Dependency-Track
+      if: env.DTRACK == 'true'
+      env:
+        DT_API_KEY: ${{ secrets.DT_API_KEY }}
+        DT_URL: ${{ secrets.DT_URL }}
       run: |
-        python -c "from scanners.dtrack_runner import DependencyTrackUploader as U; U().upload('combined.xml')"
+        python - <<'PY'
+        from scanners.dtrack_runner import DependencyTrackUploader as U
+        U().upload('combined.xml')
+        PY
