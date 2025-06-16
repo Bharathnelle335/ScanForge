@@ -1,17 +1,45 @@
 
-name: ScanForge
+name: ScanForge Manual
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      scanoss:
+        description: "Run SCANOSS scanner"
+        required: false
+        default: "true"
+      ort:
+        description: "Run ORT scanner"
+        required: false
+        default: "true"
+      syft:
+        description: "Run Syft scanner"
+        required: false
+        default: "true"
+      scancode:
+        description: "Run ScanCode Toolkit"
+        required: false
+        default: "true"
+      msbom:
+        description: "Run Microsoft SBOM tool"
+        required: false
+        default: "true"
+      dtrack:
+        description: "Upload to Dependency-Track"
+        required: false
+        default: "false"
+      excel:
+        description: "Generate Excel report"
+        required: false
+        default: "true"
 
 jobs:
   scan:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -22,18 +50,26 @@ jobs:
       run: |
         pip install -r requirements.txt
 
-    - name: Run ScanForge (all scanners)
+    - name: Run ScanForge (manual selection)
       run: |
-        python main.py --all --excel ${{ github.workspace }}
+        python main.py \
+          ${{ inputs.scanoss == 'true' && '--scanoss' || '' }} \
+          ${{ inputs.ort == 'true' && '--ort' || '' }} \
+          ${{ inputs.syft == 'true' && '--syft' || '' }} \
+          ${{ inputs.scancode == 'true' && '--scancode' || '' }} \
+          ${{ inputs.msbom == 'true' && '--msbom' || '' }} \
+          ${{ inputs.dtrack == 'true' && '--dtrack' || '' }} \
+          ${{ inputs.excel == 'true' && '--excel' || '' }} \
+          .
 
     - name: Upload reports
+      if: inputs.excel == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: scanforge-reports
-        path: |
-          combined.xlsx
+        path: combined.xlsx
 
     - name: Upload SBOM to Dependency-Track
-      if: env.DT_API_KEY != ''
+      if: inputs.dtrack == 'true'
       run: |
         python -c "from scanners.dtrack_runner import DependencyTrackUploader as U; U().upload('combined.xml')"
