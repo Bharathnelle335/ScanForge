@@ -1,4 +1,3 @@
-
 name: ScanForge Manual
 
 on:
@@ -14,41 +13,13 @@ on:
         required: true
         type: string
 
-      scanoss:
-        description: "SCANOSS"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      ort:
-        description: "ORT"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      syft:
-        description: "Syft"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      scancode:
-        description: "ScanCode"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      msbom:
-        description: "MS SBOM"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      excel:
-        description: "Generate Excel"
-        type: choice
-        options: [auto, true, false]
-        default: auto
-      dtrack:
-        description: "Upload to Dependency-Track"
-        type: choice
-        options: [auto, true, false]
-        default: auto
+      scanoss:   { description: "SCANOSS",   type: choice, options: [auto, true, false], default: auto }
+      ort:       { description: "ORT",       type: choice, options: [auto, true, false], default: auto }
+      syft:      { description: "Syft",      type: choice, options: [auto, true, false], default: auto }
+      scancode:  { description: "ScanCode",  type: choice, options: [auto, true, false], default: auto }
+      msbom:     { description: "MS SBOM",   type: choice, options: [auto, true, false], default: auto }
+      excel:     { description: "Generate Excel", type: choice, options: [auto, true, false], default: auto }
+      dtrack:    { description: "Upload to Dependency-Track", type: choice, options: [auto, true, false], default: auto }
 
 jobs:
   scan:
@@ -59,66 +30,77 @@ jobs:
 
     - name: Set up Python
       uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      with: { python-version: '3.11' }
 
     - name: Install dependencies
       run: pip install -r requirements.txt
 
-    - name: Prepare input
+    - name: Prepare input and resolve defaults
       id: prep
       run: |
+        #── capture workflow-dispatch inputs ─────────────────────────────
         kind="${{ inputs.target_kind }}"
         value="${{ inputs.target_value }}"
+
+        scanoss_raw="${{ inputs.scanoss }}"
+        ort_raw="${{ inputs.ort }}"
+        syft_raw="${{ inputs.syft }}"
+        scancode_raw="${{ inputs.scancode }}"
+        msbom_raw="${{ inputs.msbom }}"
+        excel_raw="${{ inputs.excel }}"
+        dtrack_raw="${{ inputs.dtrack }}"
+
+        #── materialise the target locally ───────────────────────────────
         if [[ "$kind" == "git" ]]; then
           git clone --depth 1 "$value" target-src
-          echo "TARGET=target-src" >> $GITHUB_ENV
+          TARGET=target-src
         elif [[ "$kind" == "zip" ]]; then
-          curl -L "$value" -o z.zip
-          unzip -q z.zip -d target-src
-          echo "TARGET=target-src" >> $GITHUB_ENV
-        elif [[ "$kind" == "docker" || "$kind" == "folder" ]]; then
-          echo "TARGET=$value" >> $GITHUB_ENV
-        elif [[ "$kind" == "sbom" ]]; then
-          echo "TARGET=$value" >> $GITHUB_ENV
+          curl -L "$value" -o code.zip
+          unzip -q code.zip -d target-src
+          TARGET=target-src
+        elif [[ "$kind" == "docker" || "$kind" == "folder" || "$kind" == "sbom" ]]; then
+          TARGET="$value"
+        else
+          echo "Unknown target_kind $kind"; exit 1
         fi
+        echo "TARGET=$TARGET" >> $GITHUB_ENV
 
-        # Convert auto → true/false defaults
-        tf() {
-          name=$1
-          val="${{ inputs[$1] }}"
-          if [[ "$val" == "true" || "$val" == "false" ]]; then echo "$val"; return; fi
-          case "$name-$kind" in
-            scanoss-zip|scanoss-git|scanoss-folder) echo true ;;
-            ort-zip|ort-git|ort-folder) echo true ;;
-            syft-docker) echo true ;;
-            scancode-zip|scancode-git|scancode-folder) echo true ;;
-            msbom-docker|msbom-folder) echo true ;;
-            excel-*) echo true ;;
-            dtrack-sbom) echo true ;;
+        #── helper: turn auto → true | false ─────────────────────────────
+        tf() {   # $1=name  $2=rawValue
+          local n=$1 v=$2
+          [[ "$v" == "true" || "$v" == "false" ]] && { echo "$v"; return; }
+          case "$n-$kind" in
+            scanoss-git|scanoss-zip|scanoss-folder)        echo true ;;
+            ort-git|ort-zip|ort-folder)                    echo true ;;
+            syft-docker)                                   echo true ;;
+            scancode-git|scancode-zip|scancode-folder)     echo true ;;
+            msbom-docker|msbom-folder)                     echo true ;;
+            excel-*)                                       echo true ;;
+            dtrack-sbom)                                   echo true ;;
             *) echo false ;;
           esac
         }
 
-        echo "SCANOSS=$(tf scanoss)" >> $GITHUB_ENV
-        echo "ORT=$(tf ort)" >> $GITHUB_ENV
-        echo "SYFT=$(tf syft)" >> $GITHUB_ENV
-        echo "SCANCODE=$(tf scancode)" >> $GITHUB_ENV
-        echo "MSBOM=$(tf msbom)" >> $GITHUB_ENV
-        echo "EXCEL=$(tf excel)" >> $GITHUB_ENV
-        echo "DTRACK=$(tf dtrack)" >> $GITHUB_ENV
+        #── resolve each flag ────────────────────────────────────────────
+        echo "SCANOSS=$( tf scanoss  "$scanoss_raw" )" >> $GITHUB_ENV
+        echo "ORT=$(     tf ort      "$ort_raw"     )" >> $GITHUB_ENV
+        echo "SYFT=$(    tf syft     "$syft_raw"    )" >> $GITHUB_ENV
+        echo "SCANCODE=$(tf scancode "$scancode_raw")" >> $GITHUB_ENV
+        echo "MSBOM=$(   tf msbom    "$msbom_raw"   )" >> $GITHUB_ENV
+        echo "EXCEL=$(   tf excel    "$excel_raw"   )" >> $GITHUB_ENV
+        echo "DTRACK=$(  tf dtrack   "$dtrack_raw"  )" >> $GITHUB_ENV
 
     - name: Run ScanForge
       run: |
-        set +e
+        set +e   # allow partial failures inside ScanForge
         python main.py \
-          $([[ "$SCANOSS" == "true" ]] && echo --scanoss) \
-          $([[ "$ORT" == "true" ]] && echo --ort) \
-          $([[ "$SYFT" == "true" ]] && echo --syft) \
-          $([[ "$SCANCODE" == "true" ]] && echo --scancode) \
-          $([[ "$MSBOM" == "true" ]] && echo --msbom) \
-          $([[ "$EXCEL" == "true" ]] && echo --excel) \
-          $([[ "$DTRACK" == "true" ]] && echo --dtrack) \
+          $([[ "$SCANOSS"  == true ]] && echo --scanoss) \
+          $([[ "$ORT"      == true ]] && echo --ort) \
+          $([[ "$SYFT"     == true ]] && echo --syft) \
+          $([[ "$SCANCODE" == true ]] && echo --scancode) \
+          $([[ "$MSBOM"    == true ]] && echo --msbom) \
+          $([[ "$EXCEL"    == true ]] && echo --excel) \
+          $([[ "$DTRACK"   == true ]] && echo --dtrack) \
           "$TARGET" || echo "ScanForge exited non-zero"
         set -e
 
@@ -133,7 +115,7 @@ jobs:
       if: env.DTRACK == 'true'
       env:
         DT_API_KEY: ${{ secrets.DT_API_KEY }}
-        DT_URL: ${{ secrets.DT_URL }}
+        DT_URL:     ${{ secrets.DT_URL }}
       run: |
         python - <<'PY'
         from scanners.dtrack_runner import DependencyTrackUploader as U
